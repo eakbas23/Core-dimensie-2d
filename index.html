@@ -1,0 +1,331 @@
+<!doctype html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8">
+  <title>Core Dimensie RPG</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    html, body { margin:0; background:#0b0d13; color:#e8ebf0; font-family: monospace; }
+    #game { width:100%; max-width:960px; margin:0 auto; }
+    canvas { width:100% !important; height:auto !important; display:block; }
+    .hud { text-align:center; padding:8px; color:#aeb6c1; font-size:14px; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/phaser@3/dist/phaser.min.js"></script>
+</head>
+<body>
+  <div id="game"></div>
+  <div class="hud">Pijltjes/WASD bewegen · Enter interactie · A/S/I/R acties in gevecht · Esc overslaan</div>
+
+  <script>
+    // ==== Config & helpers ====
+    const GAME_WIDTH = 960;
+    const GAME_HEIGHT = 540;
+    const SAVE_KEY = 'core_dimensie_save_v1';
+
+    const config = {
+      type: Phaser.AUTO,
+      parent: 'game',
+      width: GAME_WIDTH,
+      height: GAME_HEIGHT,
+      pixelArt: true,
+      backgroundColor: '#0b0d13',
+      scene: [BootScene, PrologueScene, HubScene, PortalScene, BattleScene],
+      physics: { default: 'arcade', arcade: { gravity: { y:0 }, debug:false } },
+      scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH }
+    };
+
+    function loadSave(){ try{const raw=localStorage.getItem(SAVE_KEY);return raw?JSON.parse(raw):null;}catch{return null;} }
+    function saveGame(state){ try{localStorage.setItem(SAVE_KEY,JSON.stringify(state));}catch{} }
+    function clearSave(){ try{localStorage.removeItem(SAVE_KEY);}catch{} }
+    function rnd(min,max){ return Math.floor(Math.random()*(max-min+1))+min; }
+
+    // ==== Boot ====
+    class BootScene extends Phaser.Scene {
+      constructor(){ super('Boot'); }
+      preload(){
+        // Zet deze bestanden in /assets
+        this.load.image('tiles','assets/tiles.png');             // optioneel, later voor tilemaps
+        this.load.image('portal','assets/portal.png');           // optioneel, voor visuals
+        this.load.spritesheet('hero','assets/hero.png',{ frameWidth:32, frameHeight:32 });
+        this.load.audio('bgm','assets/bgm.mp3');                 // CentralHub/overworld muziek
+        this.load.audio('battle','assets/battle.mp3');           // Portals/Battle muziek
+        this.load.audio('attack','assets/attack.wav');           // SFX bij aanvallen
+      }
+      create(){
+        // Autoplay: start pas na eerste klik/tap
+        this.bgm=this.sound.add('bgm',{loop:true,volume:0.30});
+        this.input.once('pointerdown',()=>{ if(!this.bgm.isPlaying) this.bgm.play(); });
+
+        // Basis animatie (werkt ook met 1 frame)
+        this.anims.create({key:'idle',frames:[{key:'hero',frame:0}],frameRate:2,repeat:-1});
+
+        this.scene.start('Prologue');
+      }
+    }
+
+    // ==== Proloog (tekstscroll) ====
+    class PrologueScene extends Phaser.Scene {
+      constructor(){ super('Prologue'); }
+      create(){
+        const textBlocks = [
+          { title:'PROLOOG — DE GLITCH DIE ALLES VERANDERDE', lines:[
+            '“Sommige fouten openen deuren die nooit gesloten kunnen worden.”',
+            'LOCATIE: eakbas23.nl — Late avond',
+            'De Outsider scrolt door eakbas23.nl…',
+            'Een chatvenster opent. bEAr23 knippert anders dan normaal.'
+          ]},
+          { title:'SCÈNE 2 — DE FOUT', lines:[
+            '>> CORE-LINK.PROTOCOL — ZEGEL VERBROKEN',
+            'bEAr23: “Verbindingsniveau: KERN. Toegang: te hoog.”',
+            'Een portaal van licht opent… en trekt.'
+          ]},
+          { title:'SCÈNE 3 — CENTRALHUB', lines:[
+            'De Outsider ontwaakt op een platform van licht.',
+            'Ringen: TECHRUNE, BEASTREALM, ⚡ BLIKSEMARENA, ☁️ CLOUD CITY.',
+            'bEAr23 (beschadigd): “95% geheugen verloren… status: catastrofaal.”'
+          ]},
+          { title:'SCÈNE 4 — DE CORE USERS', lines:[
+            'KAIZEN23: “Jij bent van BUITEN dit systeem.”',
+            'MMZ23: “Buitenstaanders komen hier niet zomaar.”',
+            'De reis begint…'
+          ]}
+        ];
+
+        this.addTextScroller(textBlocks,()=>this.scene.start('Hub',{save:loadSave()}));
+        this.input.keyboard.on('keydown-ESC',()=>this.scene.start('Hub',{save:loadSave()}));
+      }
+
+      addTextScroller(blocks,onComplete){
+        let y=32; const container=this.add.container(0,GAME_HEIGHT);
+        blocks.forEach(block=>{
+          const title=this.add.text(32,y,block.title,{fontSize:20,color:'#a9d1ff'}); container.add(title); y+=28;
+          block.lines.forEach(line=>{
+            const t=this.add.text(32,y,line,{fontSize:16,color:'#cfe3ff'}); container.add(t); y+=24;
+          });
+          y+=16;
+        });
+        const totalHeight=y+32;
+        const duration=(totalHeight+GAME_HEIGHT)/22*1000;
+        this.tweens.add({targets:container,y:-totalHeight,duration,ease:'Linear',onComplete:()=>{container.destroy();onComplete();}});
+      }
+    }
+
+    // ==== CentralHub ====
+    class HubScene extends Phaser.Scene {
+      constructor(){ super('Hub'); }
+      create(data){
+        // Muziek doorlopend (bgm)
+        if (!this.sound.get('bgm')?.isPlaying) this.sound.play('bgm',{loop:true,volume:0.3});
+
+        // Held
+        const startX = data?.save?.pos?.x ?? 160;
+        const startY = data?.save?.pos?.y ?? 160;
+        this.hero=this.physics.add.sprite(startX,startY,'hero',0).play('idle');
+        this.hero.setCollideWorldBounds(true);
+
+        // Besturing
+        this.cursors=this.input.keyboard.createCursorKeys();
+        this.wasd=this.input.keyboard.addKeys({up:'W',left:'A',down:'S',right:'D',interact:'ENTER',save:'S',reset:'R'});
+
+        // Portals (posities kun je later fine-tunen)
+        this.portals=[
+          {name:'TECHRUNE',x:300,y:140,color:0x4fd2ff},
+          {name:'BEASTREALM',x:480,y:220,color:0x6ee072},
+          {name:'BLIKSEMARENA',x:180,y:260,color:0xffd24f},
+          {name:'CLOUD CITY',x:560,y:120,color:0xc7cfff}
+        ];
+        this.portals.forEach(p=>{
+          const r=this.add.rectangle(p.x,p.y,44,44,p.color,0.35);
+          r.setStrokeStyle(2,p.color);
+          r.setData('portal',p.name);
+        });
+
+        // HUD-hint
+        this.add.text(8,8,'CentralHub: ga naar een portal en druk Enter. S: Save · R: Reset',{fontSize:14}).setScrollFactor(0);
+
+        // Stats
+        this.stats=data?.save?.stats ?? { hp:50, mp:15, atk:8, def:4 };
+
+        // Save/reset
+        this.input.keyboard.on('keydown-S',()=>{ saveGame({pos:{x:this.hero.x,y:this.hero.y},stats:this.stats}); this.flash('Opgeslagen!'); });
+        this.input.keyboard.on('keydown-R',()=>{ clearSave(); this.flash('Save reset'); });
+      }
+
+      update(){
+        const speed=160; this.hero.setVelocity(0);
+        if(this.cursors.left.isDown||this.wasd.left.isDown) this.hero.setVelocityX(-speed);
+        else if(this.cursors.right.isDown||this.wasd.right.isDown) this.hero.setVelocityX(speed);
+        if(this.cursors.up.isDown||this.wasd.up.isDown) this.hero.setVelocityY(-speed);
+        else if(this.cursors.down.isDown||this.wasd.down.isDown) this.hero.setVelocityY(speed);
+
+        // Enter bij portal
+        if(Phaser.Input.Keyboard.JustDown(this.wasd.interact)){
+          const p=this.nearPortal();
+          if(p){
+            saveGame({pos:{x:this.hero.x,y:this.hero.y},stats:this.stats});
+            this.scene.start('Portal',{ring:p,stats:this.stats});
+          } else {
+            this.flash('Geen portal dichtbij.');
+          }
+        }
+      }
+
+      nearPortal(){
+        const threshold=28; let closest=null, best=Infinity;
+        this.portals.forEach(p=>{
+          const d=Phaser.Math.Distance.Between(this.hero.x,this.hero.y,p.x,p.y);
+          if(d<threshold && d<best){ best=d; closest=p.name; }
+        });
+        return closest;
+      }
+
+      flash(msg){
+        const t=this.add.text(GAME_WIDTH/2,24,msg,{fontSize:16,color:'#aaf'}).setScrollFactor(0).setOrigin(0.5,0);
+        this.tweens.add({targets:t,alpha:0,duration:1200,onComplete:()=>t.destroy()});
+      }
+    }
+
+    // ==== Portal-intro ====
+    class PortalScene extends Phaser.Scene {
+      constructor(){ super('Portal'); }
+      init(data){ this.ring=data.ring; this.stats=data.stats; }
+      create(){
+        // Wissel naar battle muziek
+        this.sound.stopAll();
+        this.sound.play('battle',{loop:true,volume:0.30});
+
+        this.add.rectangle(0,0,GAME_WIDTH,GAME_HEIGHT,0x0b0d13).setOrigin(0);
+        this.add.text(GAME_WIDTH/2,GAME_HEIGHT/2-40,this.ring,{fontSize:28,color:'#dde6ff'}).setOrigin(0.5);
+        this.add.text(GAME_WIDTH/2,GAME_HEIGHT/2+6,this.ringDescription(this.ring),{fontSize:16,color:'#b7c3d9'}).setOrigin(0.5);
+        this.add.text(GAME_WIDTH/2,GAME_HEIGHT/2+60,'[Enter] Vecht · [Esc] Terug',{fontSize:16,color:'#aef1ff'}).setOrigin(0.5);
+
+        this.input.keyboard.on('keydown-ENTER',()=>{
+          this.scene.start('Battle',{
+            party:{...this.stats},
+            enemy:this.ringEnemy(this.ring),
+            ring:this.ring
+          });
+        });
+        this.input.keyboard.on('keydown-ESC',()=>{
+          this.sound.stopAll();
+          this.scene.start('Hub',{save:{pos:{x:160,y:160},stats:this.stats}});
+        });
+      }
+
+      ringDescription(name){
+        switch(name){
+          case 'TECHRUNE': return 'Codemagie en data-runes. Logica wordt kracht.';
+          case 'BEASTREALM': return 'Oerinstincten en digitale fauna. Overleven is kunst.';
+          case 'BLIKSEMARENA': return 'Pure energie en snelheid. Tactiek is alles.';
+          case 'CLOUD CITY': return 'Zwevende architectuur, dunne lucht. Beweeg scherp.';
+          default: return 'Onbekende ring. Verken voorzichtig.';
+        }
+      }
+
+      ringEnemy(name){
+        switch(name){
+          case 'TECHRUNE': return { name:'Rune-Wachter', hp:44, atk:7, def:4 };
+          case 'BEASTREALM': return { name:'Digitale Wolf', hp:48, atk:8, def:3 };
+          case 'BLIKSEMARENA': return { name:'Stroomgeest', hp:42, atk:9, def:2 };
+          case 'CLOUD CITY': return { name:'Nebula-Paladin', hp:46, atk:7, def:5 };
+          default: return { name:'Glitch-echo', hp:40, atk:6, def:3 };
+        }
+      }
+    }
+
+    // ==== Battle (turn-based) ====
+    class BattleScene extends Phaser.Scene {
+      constructor(){ super('Battle'); }
+      init(data){
+        this.party = data.party;   // speler stats
+        this.enemy = data.enemy;   // vijand stats
+        this.ring  = data.ring;    // ringnaam
+        this.turn  = 'player';     // beurt
+      }
+
+      create(){
+        this.add.rectangle(0,0,GAME_WIDTH,GAME_HEIGHT,0x0a0f17).setOrigin(0);
+        this.add.text(20,20,`Gevecht — ${this.ring}`,{fontSize:18,color:'#cfe3ff'});
+
+        this.drawHUD();
+        this.add.text(20,140,'Acties: [A]ttack  [S]kill (Glitch Burst)  [I]tem (Nano-Heal)  [R]un',
+          {fontSize:14,color:'#aeb6c1'});
+
+        this.input.keyboard.on('keydown',(e)=>{
+          if(this.turn!=='player') return;
+          const k=e.key.toLowerCase();
+          if(k==='a') this.playerAction('attack');
+          if(k==='s') this.playerAction('skill');
+          if(k==='i') this.playerAction('item');
+          if(k==='r') this.endBattle('run');
+        });
+      }
+
+      drawHUD(){
+        this.children.list.filter(n=>n.isText && n.tag==='hud').forEach(n=>n.destroy());
+        const h1=this.add.text(20,60,`Held HP: ${this.party.hp}`,{fontSize:16,color:'#86f6a8'}); h1.tag='hud';
+        const h2=this.add.text(20,78,`Vijand (${this.enemy.name}) HP: ${this.enemy.hp}`,{fontSize:16,color:'#ff9aa2'}); h2.tag='hud';
+      }
+
+      playerAction(type){
+        let log='';
+        if(type==='attack'){
+          const dmg=rnd(6,10);
+          this.enemy.hp-=dmg;
+          log=`Je valt aan: ${dmg} dmg.`;
+          this.sound.play('attack');
+        } else if(type==='skill'){
+          const roll=rnd(1,100);
+          if(roll<=60){ const dmg=rnd(10,16); this.enemy.hp-=dmg; log=`Glitch Burst! ${dmg} dmg.`; }
+          else if(roll<=85){ const heal=rnd(6,10); this.party.hp=Math.min(this.party.hp+heal,50); log=`Glitch Heal +${heal}.`; }
+          else { const backfire=rnd(4,8); this.party.hp-=backfire; log=`Glitch backfire! -${backfire} HP.`; }
+        } else if(type==='item'){
+          const heal=rnd(8,12);
+          this.party.hp=Math.min(this.party.hp+heal,50);
+          log=`Nano-Heal +${heal} HP.`;
+        }
+        this.updateLog(log);
+        this.drawHUD();
+        if(this.enemy.hp<=0) return this.endBattle('win');
+
+        // vijandbeurt
+        this.turn='enemy';
+        this.time.delayedCall(480,()=>{
+          const edmg=rnd(5,9);
+          this.party.hp-=edmg;
+          this.updateLog(`Vijand slaat terug: ${edmg} dmg.`);
+          this.drawHUD();
+          if(this.party.hp<=0) return this.endBattle('lose');
+          this.turn='player';
+        });
+      }
+
+      updateLog(msg){
+        if(this.logText) this.logText.destroy();
+        this.logText=this.add.text(20,170,msg,{fontSize:14,color:'#b7c3d9'});
+      }
+
+      endBattle(result){
+        let msg='';
+        if(result==='win'){
+          msg='Overwinning! +5 HP hersteld.';
+          this.party.hp=Math.min(this.party.hp+5,50);
+        } else if(result==='lose'){
+          msg='Nederlaag… Je wordt teruggezet naar CentralHub.';
+        } else {
+          msg='Je ontsnapt en keert terug.';
+        }
+        this.updateLog(msg);
+        this.time.delayedCall(800,()=>{
+          this.sound.stopAll();
+          // Ga terug naar hub en bewaar stats
+          this.scene.start('Hub',{save:{pos:{x:160,y:160},stats:this.party}});
+        });
+      }
+    }
+
+    // ==== Start game ====
+    new Phaser.Game(config);
+  </script>
+</body>
+</html>
